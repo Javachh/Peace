@@ -1,0 +1,184 @@
+"""
+MIT License
+
+Copyright (c) 2023 Javokhir Chorshanbaev
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
+from hashlib import sha256
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
+import time
+import json
+
+class Transacao:
+    def __init__(self, remetente, destinatario, valor, ajuda_humanitaria=False):
+        self.remetente = remetente
+        self.destinatario = destinatario
+        self.valor = valor
+        self.ajuda_humanitaria = ajuda_humanitaria
+        self.carimbo_de_tempo = time.time()
+        self.assinatura = None
+
+    def to_dict(self):
+        return {
+            'remetente': self.remetente,
+            'destinatario': self.destinatario,
+            'valor': self.valor,
+            'ajuda_humanitaria': self.ajuda_humanitaria,
+            'carimbo_de_tempo': self.carimbo_de_tempo
+        }
+
+    def assinar(self, chave_privada):
+        chave_privada = RSA.import_key(chave_privada)
+        h = sha256(json.dumps(self.to_dict(), sort_keys=True).encode('utf-8')).digest()
+        self.assinatura = pkcs1_15.new(chave_privada).sign(h)
+
+    def validar_assinatura(self):
+        chave_publica = RSA.import_key(self.remetente)
+        h = sha256(json.dumps(self.to_dict(), sort_keys=True).encode('utf-8')).digest()
+        try:
+            pkcs1_15.new(chave_publica).verify(h, self.assinatura)
+            return True
+        except (ValueError, TypeError, pkcs1_15.pkcs1_15Error):
+            return False
+
+class Bloco:
+    def __init__(self, indice, transacoes, carimbo_de_tempo, hash_anterior, nonce=0):
+        self.indice = indice
+        self.transacoes = transacoes
+        self.carimbo_de_tempo = carimbo_de_tempo
+        self.hash_anterior = hash_anterior
+        self.nonce = nonce
+        self.hash = self.calcular_hash()
+
+    def calcular_hash(self):
+        bloco_str = json.dumps({
+            'indice': self.indice,
+            'transacoes': [transacao.to_dict() for transacao in self.transacoes],
+            'carimbo_de_tempo': self.carimbo_de_tempo,
+            'hash_anterior': self.hash_anterior,
+            'nonce': self.nonce
+        }, sort_keys=True).encode('utf-8')
+        return sha256(bloco_str).hexdigest()
+
+    def minerar_bloco(self, dificuldade):
+        while self.hash[:dificuldade] != '0' * dificuldade:
+            self.nonce += 1
+            self.hash = self.calcular_hash()
+
+class Blockchain:
+    def __init__(self, dificuldade_mineracao=2, recompensa_mineracao=1.0):
+        self.chain = [self.criar_bloco_genesis()]
+        self.dificuldade_mineracao = dificuldade_mineracao
+        self.transacoes_pendentes = []
+        self.limite_maximo = 210900000
+        self.recompensa_mineracao = recompensa_mineracao
+        self.preco_inicial = 0.5  # em euros
+
+    def criar_bloco_genesis(self):
+        return Bloco(0, [], time.time(), "0")
+
+    def obter_ultimo_bloco(self):
+        return self.chain[-1]
+
+    def adicionar_transacao(self, transacao):
+        if not transacao.validar_assinatura():
+            raise ValueError("Assinatura inválida. A transação não será adicionada.")
+        self.transacoes_pendentes.append(transacao)
+
+    def minerar_blocos_pendentes(self, recompensa_mineracao_endereco):
+        # Adicionar recompensa para o minerador
+        recompensa = Transacao('Sistema', recompensa_mineracao_endereco, self.recompensa_mineracao)
+        self.transacoes_pendentes.append(recompensa)
+
+        novo_bloco = Bloco(len(self.chain), self.transacoes_pendentes, time.time(), self.obter_ultimo_bloco().hash)
+        novo_bloco.minerar_bloco(self.dificuldade_mineracao)
+        self.chain.append(novo_bloco)
+
+        # Zerar transações pendentes
+        self.transacoes_pendentes = []
+
+        # Ajustar o preço após cada bloco minerado
+        self.ajustar_preco()
+
+    def ajustar_preco(self):
+        # Ajustar o preço atual com base em uma taxa de aumento
+        taxa_aumento = 0.01  # ajuste conforme necessário
+        self.preco_inicial += self.preco_inicial * taxa_aumento
+
+    def validar_blocos(self):
+        for i in range(1, len(self.chain)):
+            bloco_atual = self.chain[i]
+            bloco_anterior = self.chain[i - 1]
+
+            # Validar hash do bloco
+            if bloco_atual.calcular_hash() != bloco_atual.hash:
+                return False
+
+            # Validar hash anterior
+            if bloco_atual.hash_anterior != bloco_anterior.hash:
+                return False
+
+        return True
+
+    def calcular_oferta_circulante(self):
+        # Calcular a oferta circulante com base nos blocos minerados
+        return sum([sum([transacao.valor for transacao in bloco.transacoes]) for bloco in self.chain[1:]])
+
+    def calcular_preco_atual(self):
+        # Calcular o preço atual com base na oferta circulante
+        oferta_circulante = self.calcular_oferta_circulante()
+        if oferta_circulante <= self.limite_maximo:
+            return self.preco_inicial
+        else:
+            return self.preco_inicial * (1 + 0.1 * (oferta_circulante - self.limite_maximo) / self.limite_maximo)
+
+    def calcular_taxa_ajuda_humanitaria(self, valor):
+        # Calcular a taxa de ajuda humanitária (0,5% sobre compras)
+        return 0.005 * valor
+
+class Carteira:
+    def __init__(self):
+        self.chave_privada = RSA.generate(2048)
+        self.endereco = self.chave_privada.publickey().export_key().decode()
+
+# Uso do Blockchain de exemplo para "peace"
+blockchain_peace = Blockchain()
+
+# Alice envia 1.0 PEACE para o minerador
+carteira_alice = Carteira()
+transacao1 = Transacao(carteira_alice.endereco, 'endereco_minerador', 1.0)
+transacao1.ajuda_humanitaria = True  # Adiciona a flag para indicar que essa transação ajuda a humanitária
+transacao1.assinatura = transacao1.assinar(carteira_alice.chave_privada.export_key().decode())  # Adiciona a assinatura
+blockchain_peace.adicionar_transacao(transacao1)
+
+# Exibir mensagem informativa sobre a taxa de ajuda humanitária
+print("Você está prestes a comprar PEACE. 0,5% da sua compra será destinada à ajuda humanitária em países em guerra.")
+
+# Minerar os blocos
+blockchain_peace.minerar_blocos_pendentes('endereco_minerador')
+
+# Verificar a oferta circulante e o preço atual
+oferta_circulante = blockchain_peace.calcular_oferta_circulante()
+preco_atual = blockchain_peace.calcular_preco_atual()
+
+print(f"Oferta Circulante: {oferta_circulante} PEACE")
+print(f"Preço Atual: {preco_atual} € por PEACE")
